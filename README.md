@@ -12,6 +12,12 @@ npm run dev
 
 Production: Vite app in `web/`, deployed on Vercel.
 
+- GitHub: https://github.com/jachiike-madubuko/TDIM.bi
+- Live: https://tdimbi.vercel.app (also https://tdim-bi.vercel.app)
+- Project name on Vercel: `tdim.bi` (root directory: `web/`)
+
+Note: `tdim.bi.vercel.app` is not available. Vercel reserves `*.bi.vercel.app` for another account.
+
 ## Data cleaning
 
 ```bash
