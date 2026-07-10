@@ -1,0 +1,11 @@
+node_modules/
+web/node_modules/
+web/dist/
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.env.*
+.vercel
+web/.vercel
+*.local
