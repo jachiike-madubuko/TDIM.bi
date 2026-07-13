@@ -19,19 +19,22 @@ Any resolution whose text matches a known food item name (e.g. SALMON) or looks
 like a kitchen note (86, side, sub, no, extra) is written to a review file, not
 silently trusted.
 
+Symphony layout
+---------------
+Monthly "Transactional Data for Inv Mgmt" exports include a report preamble
+(Business Dates, Locations, etc.). Column headers sit on Excel row 7; data
+starts on row 8. Flat cleaned files (header on row 1) are also accepted.
+
 Usage
 -----
     pip install pandas openpyxl
-    python clean_tdim.py TDIM_26Q2.xlsx
-    python clean_tdim.py TDIM_26Q2.xlsx --output cleaned.xlsx --target "IPA 1"
+    python clean_tdim.py TDIM_2025-01.xlsx
+    python clean_tdim.py TDIM_2025-01.xlsx --output cleaned.xlsx --target "IPA 1"
 
 Outputs
 -------
     <input>_clean.xlsx     cleaned transactions (same columns, TYPE IN rows removed)
     <input>_flagged.csv    resolutions to eyeball (check, renamed_to, reason)
-
-NOTE: This was written in an environment without a runnable sandbox, so run it
-once on a copy and compare row counts before trusting it in the pipeline.
 """
 
 import argparse
@@ -65,12 +68,62 @@ def find_col(columns, exact, contains):
     return None
 
 
+def is_header_row(values):
+    texts = [s(v).strip().lower() for v in values]
+    if "transaction date and time" in texts:
+        return True
+    if "menu item name" in texts and "check number" in texts:
+        return True
+    joined = " | ".join(texts)
+    return "check line total" in joined and "menu item" in joined
+
+
+def load_tdim(path):
+    """
+    Load a Symphony TDIM export.
+    Detects the header row (usually Excel row 7); data starts on the next row.
+    Falls back to row 7 if no marker is found in the first 30 rows.
+    """
+    if path.lower().endswith(".csv"):
+        preview = pd.read_csv(path, header=None, dtype=object, nrows=30)
+    else:
+        preview = pd.read_excel(path, header=None, dtype=object, nrows=30)
+
+    header_idx = None
+    for i in range(len(preview)):
+        if is_header_row(list(preview.iloc[i].values)):
+            header_idx = i
+            break
+    if header_idx is None:
+        header_idx = 6 if len(preview) > 6 else 0  # Excel row 7
+
+    if path.lower().endswith(".csv"):
+        df = pd.read_csv(path, header=header_idx, dtype=object)
+    else:
+        df = pd.read_excel(path, header=header_idx, dtype=object)
+
+    df = df.dropna(how="all")
+    df.columns = [
+        s(c).strip() if s(c).strip() else "Column %d" % (i + 1)
+        for i, c in enumerate(df.columns)
+    ]
+    return df, header_idx + 1  # 1-indexed Excel row for logging
+
+
 def clean(df, target_name="IPA 1", typein_name="TYPE IN"):
     columns = list(df.columns)
-    name_col = find_col(columns, "Menu Item Name", "menu item name") or find_col(columns, "Menu Item Name", "item name")
-    check_col = find_col(columns, "Check Number", "check number") or find_col(columns, "Check Number", "check")
-    ref_col = find_col(columns, "Reference Information Line 1", "reference information") or find_col(columns, "Reference Information Line 1", "reference")
-    group_col = find_col(columns, "Major Group Name", "major group") or find_col(columns, "Major Group Name", "group")
+    name_col = find_col(columns, "Menu Item Name", "menu item name") or find_col(
+        columns, "Menu Item Name", "item name"
+    )
+    check_col = find_col(columns, "Check Number", "check number") or find_col(
+        columns, "Check Number", "check"
+    )
+    ref_col = find_col(
+        columns, "Reference Information Line 1", "reference information"
+    ) or find_col(columns, "Reference Information Line 1", "reference")
+    group_col = find_col(columns, "Major Group Name", "major group") or find_col(
+        columns, "Major Group Name", "group"
+    )
 
     if not name_col:
         raise ValueError("Could not find a Menu Item Name column. Columns seen: %s" % columns)
@@ -85,7 +138,6 @@ def clean(df, target_name="IPA 1", typein_name="TYPE IN"):
     def ck(r):
         return s(r.get(check_col)) if check_col else "__ALL__"
 
-    # Non-beverage item names, used to flag suspicious resolutions.
     food_names = set()
     bev = ["BEER", "WINE", "LIQUOR", "SPIRIT", "COCKTAIL", "NON ALC", "NON-ALC", "BEVERAGE", "BAR"]
     if group_col:
@@ -96,6 +148,7 @@ def clean(df, target_name="IPA 1", typein_name="TYPE IN"):
                 food_names.add(name)
 
     import re
+
     kitchen_pat = re.compile(r"^(86\b|no |sub\b|sub |side |extra |add |light |hold |on side)", re.I)
 
     to_delete = set()
@@ -124,11 +177,17 @@ def clean(df, target_name="IPA 1", typein_name="TYPE IN"):
                     paired = True
                     up = ref.upper()
                     if up in food_names or kitchen_pat.match(ref):
-                        flagged.append({
-                            "check": ck(records[i]),
-                            "renamed_to": ref,
-                            "reason": "matches a food item name" if up in food_names else "looks like a kitchen note",
-                        })
+                        flagged.append(
+                            {
+                                "check": ck(records[i]),
+                                "renamed_to": ref,
+                                "reason": (
+                                    "matches a food item name"
+                                    if up in food_names
+                                    else "looks like a kitchen note"
+                                ),
+                            }
+                        )
                     break
         if not paired:
             unpaired.append(ck(records[i]))
@@ -159,10 +218,8 @@ def main():
     out_path = args.output or (base + "_clean.xlsx")
     review_path = args.review or (base + "_flagged.csv")
 
-    if args.input.lower().endswith(".csv"):
-        df = pd.read_csv(args.input, dtype=object)
-    else:
-        df = pd.read_excel(args.input, dtype=object)
+    df, header_row = load_tdim(args.input)
+    print("Detected header on Excel row %d (data from row %d)." % (header_row, header_row + 1))
 
     out_df, summary = clean(df, target_name=args.target)
 
@@ -181,7 +238,11 @@ def main():
     print("  TYPE IN removed :", summary["deleted"])
     print("  unpaired IPA 1  :", summary["unpaired"], "(kept their name)")
     print("  output rows     :", summary["output_rows"])
-    print("  flagged         :", len(summary["flagged"]), "-> %s" % (review_path if summary["flagged"] else "none"))
+    print(
+        "  flagged         :",
+        len(summary["flagged"]),
+        "-> %s" % (review_path if summary["flagged"] else "none"),
+    )
     print("  written         :", out_path)
 
 

@@ -1,9 +1,15 @@
 import { ROLE_MATCHERS } from "./constants";
 import { coerceNumber, excelSerialToDate, normalizeHeader } from "./helpers";
+import { TDIM_COLUMN_ROLES } from "./tdimFormat";
 
 export function matchRole(header) {
-  const h = normalizeHeader(header).toLowerCase();
-  if (!h) return null;
+  const exact = normalizeHeader(header);
+  if (!exact) return null;
+  if (TDIM_COLUMN_ROLES[exact]) return TDIM_COLUMN_ROLES[exact];
+  const h = exact.toLowerCase();
+  for (const [colName, role] of Object.entries(TDIM_COLUMN_ROLES)) {
+    if (colName.toLowerCase() === h) return role;
+  }
   for (const [role, keywords] of ROLE_MATCHERS) {
     for (const kw of keywords) {
       if (h.includes(kw)) return role;
