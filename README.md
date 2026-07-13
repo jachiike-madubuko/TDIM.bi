@@ -20,9 +20,13 @@ Note: `tdim.bi.vercel.app` is not available. Vercel reserves `*.bi.vercel.app` f
 
 ## Data cleaning
 
+Monthly Symphony exports have a report preamble. Headers are on Excel row 7;
+data starts on row 8. The cleaner and the web importer both detect that layout
+(and still accept flat cleaned files with headers on row 1).
+
 ```bash
 pip install pandas openpyxl
-python clean_tdim.py TDIM_26Q2.xlsx
+python clean_tdim.py TDIM_2025-01.xlsx
 ```
 
 ## Docs

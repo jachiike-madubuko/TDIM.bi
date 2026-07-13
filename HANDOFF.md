@@ -79,6 +79,12 @@ to multi-venue and multi-year without loading everything into the browser.
 
 ## Data assumptions (TDIM / Oracle Symphony)
 
+- Monthly "Transactional Data for Inv Mgmt" exports include a report preamble.
+  Column headers are on **Excel row 7**; first data row is **row 8**. The web
+  importer and `clean_tdim.py` both detect this (and accept flat cleaned files
+  with headers on row 1).
+- Field mapping is fixed to the standard TDIM columns. The mapping editor only
+  opens when a required field is missing.
 - Join key for items is the item **Number**, not the name (names truncate). The item
   leaderboard groups on name for readability but you should switch to Number once joins matter.
 - **COGS is zero** in the POS export. Margin, food cost, and contribution cannot be computed

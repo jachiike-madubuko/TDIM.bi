@@ -1,14 +1,14 @@
 export const CHART_COLORS = [
-  "#0f766e",
-  "#0369a1",
-  "#b45309",
-  "#be123c",
-  "#4338ca",
-  "#15803d",
-  "#c2410c",
-  "#7c3aed",
-  "#0e7490",
-  "#a16207",
+  "#7c8cff",
+  "#22d3ee",
+  "#d946ef",
+  "#a78bfa",
+  "#34d399",
+  "#fb7185",
+  "#fbbf24",
+  "#60a5fa",
+  "#f472b6",
+  "#2dd4bf",
 ];
 
 // Canonical F&B roles. Order matters: earlier roles win when headers overlap.
