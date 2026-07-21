@@ -9,3 +9,10 @@ __pycache__/
 .vercel
 web/.vercel
 *.local
+exports/*
+!exports/index_pipeline/
+exports/index_pipeline/*
+!exports/index_pipeline/README.md
+TD/
+*.xlsx
+!Bistro_Ownership_Story.xlsx

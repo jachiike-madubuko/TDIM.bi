@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import _ from "lodash";
 import {
   Chart,
@@ -6,10 +6,11 @@ import {
   KpiCard,
   LabeledSelect,
   Panel,
-  Pill,
   ResultTable,
   StarterView,
 } from "./ui";
+import FilterBar from "./FilterBar";
+import StoryConstructor from "./story/StoryConstructor";
 import { MEASURE_LABELS, ROLE_LABELS } from "../lib/constants";
 import { cleanTransactions } from "../lib/clean";
 import { interpretQuery } from "../lib/chat";
@@ -23,6 +24,8 @@ import {
   isColumnAllZero,
   toDate,
 } from "../lib/helpers";
+import { clearWorkspace, loadWorkspace, saveWorkspaceSettings, syncDatasets } from "../lib/supabasePersist";
+import { supabaseConfigured } from "../lib/supabase";
 import { executeSpec, rowMatchesFilters } from "../lib/query";
 import { makeSampleData } from "../lib/sampleData";
 import { buildSchema } from "../lib/schema";
@@ -44,7 +47,7 @@ function dimLabel(role) {
 export default function FBTransactionExplorer() {
   const [datasets, setDatasets] = useState([]);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTab] = useState("story");
   const [globalFilters, setGlobalFilters] = useState([]);
   const [mappingOverride, setMappingOverride] = useState({});
   const [savedViews, setSavedViews] = useState([]);
@@ -69,9 +72,95 @@ export default function FBTransactionExplorer() {
   const [showMapping, setShowMapping] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
   const [importNote, setImportNote] = useState("");
+  const [hydrated, setHydrated] = useState(false);
+  const [persistNote, setPersistNote] = useState("");
+  const skipDatasetSyncRef = useRef(true);
 
   const fileRef = useRef(null);
   const viewsRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const ws = await loadWorkspace();
+        if (cancelled) return;
+        if (ws) {
+          if (ws.datasets?.length) setDatasets(ws.datasets);
+          if (ws.mappingOverride) setMappingOverride(ws.mappingOverride);
+          if (ws.savedViews) setSavedViews(ws.savedViews);
+          if (typeof ws.hideModifiers === "boolean") setHideModifiers(ws.hideModifiers);
+          if (ws.datasets?.length || ws.backend) {
+            const where =
+              ws.backend === "supabase"
+                ? "Supabase"
+                : ws.backend === "indexeddb-fallback"
+                  ? "IndexedDB (Supabase offline)"
+                  : "this browser";
+            setPersistNote(
+              `Restored ${ws.datasets?.length || 0} period(s) from ${where}` +
+                (ws.updatedAt ? ` · saved ${new Date(ws.updatedAt).toLocaleString()}` : "") +
+                (supabaseConfigured ? "" : " · set VITE_SUPABASE_* to enable cloud sync")
+            );
+          }
+        } else if (!supabaseConfigured) {
+          setPersistNote("Cloud sync off. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable Supabase.");
+        }
+      } catch (err) {
+        if (!cancelled) setError("Could not restore saved data: " + err.message);
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const t = setTimeout(() => {
+      saveWorkspaceSettings({
+        datasets,
+        mappingOverride,
+        savedViews,
+        hideModifiers,
+      }).catch((err) => {
+        setError("Could not save settings: " + err.message);
+      });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [mappingOverride, savedViews, hideModifiers, hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (skipDatasetSyncRef.current) {
+      skipDatasetSyncRef.current = false;
+      return;
+    }
+    const t = setTimeout(() => {
+      Promise.all([
+        saveWorkspaceSettings({
+          datasets,
+          mappingOverride,
+          savedViews,
+          hideModifiers,
+        }),
+        syncDatasets(datasets),
+      ])
+        .then(([settingsRes, syncRes]) => {
+          if (syncRes?.backend === "supabase") {
+            setPersistNote(`Synced ${datasets.length} period(s) to Supabase`);
+          } else if (settingsRes?.backend === "indexeddb") {
+            setPersistNote(`Saved ${datasets.length} period(s) in this browser`);
+          }
+        })
+        .catch((err) => {
+          setError("Could not sync periods: " + err.message);
+        });
+    }, 900);
+    return () => clearTimeout(t);
+  }, [datasets, hydrated]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rawRows = useMemo(() => {
     const out = [];
@@ -169,6 +258,18 @@ export default function FBTransactionExplorer() {
     };
   }, [filteredRows, mapping]);
 
+  function openStoryInExplore() {
+    setPivot({
+      measureRole: "netSales",
+      agg: "sum",
+      groupRole: "date",
+      groupMode: "month",
+      viz: "line",
+      topN: 36,
+    });
+    setTab("explore");
+  }
+
   function ingestRows(name, raw, summary, extras) {
     if (!raw || !raw.length) throw new Error("No rows found in " + name);
     setDatasets((prev) => {
@@ -223,6 +324,7 @@ export default function FBTransactionExplorer() {
             meta: parsed.meta,
             headerExcelRow: parsed.headerExcelRow,
             dataStartExcelRow: parsed.dataStartExcelRow,
+            sourceFilename: file.name,
           });
         } catch (err) {
           setError("Could not read " + file.name + ": " + err.message);
@@ -241,11 +343,28 @@ export default function FBTransactionExplorer() {
     const cleaned = cleanTransactions(makeSampleData(), {});
     const { mapping: sampleMap } = fixedTdimMapping(Object.keys(cleaned.rows[0] || {}));
     setMappingOverride((m) => ({ ...sampleMap, ...m }));
-    ingestRows("Sample Q2 2026", cleaned.rows, cleaned.summary, { period: "Sample Q2 2026" });
+    ingestRows("Sample Feb 2025–Jun 2026", cleaned.rows, cleaned.summary, {
+      period: "Sample Feb 2025–Jun 2026",
+    });
   }
 
   function removeDataset(id) {
     setDatasets((prev) => prev.filter((d) => d.id !== id));
+  }
+
+  async function clearAllData() {
+    setDatasets([]);
+    setMappingOverride({});
+    setSavedViews([]);
+    setGlobalFilters([]);
+    setImportNote("");
+    setPersistNote("");
+    try {
+      await clearWorkspace();
+      setPersistNote("Cleared saved workspace from this browser.");
+    } catch (err) {
+      setError("Could not clear saved data: " + err.message);
+    }
   }
 
   function toggleFilter(field, value) {
@@ -533,6 +652,7 @@ export default function FBTransactionExplorer() {
 
           <div className="glass hidden items-center gap-1 rounded-full p-1 md:flex">
             {[
+              ["story", "Story"],
               ["dashboard", "Overview"],
               ["explore", "Explore"],
               ["chat", "Ask"],
@@ -582,6 +702,13 @@ export default function FBTransactionExplorer() {
             </div>
           </div>
         ) : null}
+        {persistNote && !error ? (
+          <div className="mx-auto mt-3 max-w-[1600px] px-4 md:px-6">
+            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/60">
+              {persistNote}
+            </div>
+          </div>
+        ) : null}
         {importNote && !error ? (
           <div className="mx-auto mt-3 max-w-[1600px] px-4 md:px-6">
             <div className="rounded-2xl border border-emerald-400/25 bg-emerald-400/10 px-4 py-2.5 text-sm text-emerald-100">
@@ -593,11 +720,23 @@ export default function FBTransactionExplorer() {
         <div className="app-grid relative z-10 mx-auto grid max-w-[1600px] grid-cols-[260px_1fr] gap-4 px-4 py-4 md:px-6">
           <aside className="rail glass sticky top-4 h-fit space-y-5 rounded-[1.5rem] p-4">
             <div>
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40">
-                Periods
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40">
+                  Periods
+                </div>
+                {datasets.length > 0 && (
+                  <button
+                    onClick={clearAllData}
+                    className="text-[11px] font-semibold text-rose-300/80 hover:text-rose-200"
+                  >
+                    Clear all
+                  </button>
+                )}
               </div>
               {datasets.length === 0 ? (
-                <div className="text-xs text-white/35">Upload monthly TDIM files to stack 2025 → now.</div>
+                <div className="text-xs text-white/35">
+                  Upload monthly TDIM files to stack 2025 → now. They stay in this browser until you clear them.
+                </div>
               ) : (
                 <div className="space-y-1.5">
                   {datasets.map((d) => (
@@ -774,21 +913,29 @@ export default function FBTransactionExplorer() {
           </aside>
 
           <main className="min-w-0 space-y-4">
-            {!hasData ? (
+            {!hasData && tab === "story" ? (
+              <StoryConstructor
+                rows={filteredRows}
+                mapping={mapping}
+                onOpenExplore={openStoryInExplore}
+                onRequestLoad={() => fileRef.current?.click()}
+                onLoadSample={loadSample}
+              />
+            ) : !hasData ? (
               <div className="glass rise relative overflow-hidden rounded-[1.75rem] px-8 py-16 text-center">
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(124,140,255,0.25),transparent_45%),radial-gradient(circle_at_80%_70%,rgba(217,70,239,0.18),transparent_40%)]" />
                 <div className="relative">
                   <div className="brand-title text-4xl text-white md:text-5xl">TDIM.bi</div>
                   <p className="mx-auto mt-4 max-w-lg text-sm leading-relaxed text-white/55">
-                    Drop monthly Symphony exports. We skip the preamble, auto-map TDIM columns, resolve IPA 1
-                    type-ins, and give you a glass cockpit for daypart, mix, and trends.
+                    Drop monthly Symphony / TD exports. We skip the preamble, auto-map columns, resolve IPA 1
+                    type-ins, and open on the Story Constructor (Setup → Conflict → Resolution).
                   </p>
                   <div className="mt-7 flex items-center justify-center gap-3">
                     <button
                       onClick={() => fileRef.current && fileRef.current.click()}
                       className="btn btn-primary px-5 py-2.5"
                     >
-                      Upload first month
+                      Load TD files
                     </button>
                     <button onClick={loadSample} className="btn px-5 py-2.5">
                       Preview sample
@@ -798,55 +945,18 @@ export default function FBTransactionExplorer() {
               </div>
             ) : (
               <>
-                <div className="glass rise flex flex-wrap items-center gap-3 rounded-[1.25rem] p-3.5">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/40">
-                    Filters
-                  </span>
-                  {filterRoles.map((role) => (
-                    <div key={role} className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[11px] text-white/35">{dimLabel(role)}</span>
-                      {_.uniq(rows.map((r) => String(r[mapping[role]])).filter((v) => v && v !== "null"))
-                        .slice(0, role === "familyGroup" ? 6 : 8)
-                        .map((v) => (
-                          <Pill
-                            key={v}
-                            active={isFilterActive(mapping[role], v)}
-                            onClick={() => toggleFilter(mapping[role], v)}
-                          >
-                            {v}
-                          </Pill>
-                        ))}
-                    </div>
-                  ))}
-                  {datasets.length > 1 && (
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[11px] text-white/35">period</span>
-                      {datasets.map((d) => (
-                        <Pill
-                          key={d.id}
-                          active={isFilterActive("__period", d.name)}
-                          onClick={() => toggleFilter("__period", d.name)}
-                        >
-                          {d.name}
-                        </Pill>
-                      ))}
-                    </div>
-                  )}
-                  <label className="ml-auto flex items-center gap-2 text-xs text-white/45">
-                    <input
-                      type="checkbox"
-                      checked={hideModifiers}
-                      onChange={(e) => setHideModifiers(e.target.checked)}
-                      className="accent-[#7c8cff]"
-                    />
-                    Hide TYPE IN leftovers
-                  </label>
-                  {globalFilters.length > 0 && (
-                    <button onClick={() => setGlobalFilters([])} className="text-xs font-semibold text-rose-300">
-                      Clear
-                    </button>
-                  )}
-                </div>
+                <FilterBar
+                  rows={rows}
+                  mapping={mapping}
+                  datasets={datasets}
+                  filterRoles={filterRoles}
+                  globalFilters={globalFilters}
+                  hideModifiers={hideModifiers}
+                  onToggleFilter={toggleFilter}
+                  onClearFilters={() => setGlobalFilters([])}
+                  onHideModifiers={setHideModifiers}
+                  isFilterActive={isFilterActive}
+                />
 
                 {(cleaningSummary.resolved > 0 ||
                   cleaningSummary.flagged.length > 0 ||
@@ -926,6 +1036,16 @@ export default function FBTransactionExplorer() {
                     accent="rgba(96,165,250,0.4)"
                   />
                 </div>
+
+                {tab === "story" && (
+                  <StoryConstructor
+                    rows={filteredRows}
+                    mapping={mapping}
+                    onOpenExplore={openStoryInExplore}
+                    onRequestLoad={() => fileRef.current?.click()}
+                    onLoadSample={loadSample}
+                  />
+                )}
 
                 {tab === "dashboard" && (
                   <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -1178,6 +1298,7 @@ export default function FBTransactionExplorer() {
 
       <nav className="dock glass-strong" aria-label="Primary">
         {[
+          ["story", "Story"],
           ["dashboard", "Overview"],
           ["explore", "Explore"],
           ["chat", "Ask"],

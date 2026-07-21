@@ -88,6 +88,57 @@ export function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Download the first SVG inside `rootEl` as a PNG (Recharts-friendly).
+ * Uses a dark canvas fill so transparent chart backgrounds stay readable.
+ */
+export function downloadSvgAsPng(rootEl, filename = "chart.png", opts = {}) {
+  if (!rootEl) return;
+  const svg = rootEl.querySelector("svg");
+  if (!svg) return;
+
+  const bg = opts.background || "#0b0d16";
+  const scale = opts.scale || 2;
+  const rect = svg.getBoundingClientRect();
+  const width = Math.max(1, Math.round(rect.width || svg.clientWidth || 800));
+  const height = Math.max(1, Math.round(rect.height || svg.clientHeight || 400));
+
+  const clone = svg.cloneNode(true);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("width", String(width));
+  clone.setAttribute("height", String(height));
+  if (!clone.getAttribute("viewBox")) {
+    clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  }
+
+  const serializer = new XMLSerializer();
+  const svgText = serializer.serializeToString(clone);
+  const blob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    ctx.scale(scale, scale);
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    URL.revokeObjectURL(url);
+    canvas.toBlob((png) => {
+      if (png) downloadBlob(png, filename);
+    }, "image/png");
+  };
+  img.onerror = () => URL.revokeObjectURL(url);
+  img.src = url;
+}
+
 export function isColumnAllZero(rows, field) {
   if (!field) return false;
   let seen = 0;
