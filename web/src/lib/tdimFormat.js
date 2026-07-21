@@ -146,9 +146,17 @@ export function periodLabelFromMeta(meta, rows, fileName) {
   const base = String(fileName || "")
     .replace(/\.(xlsx|xls|csv)$/i, "")
     .trim();
+  // Full year: 2025-08, 2025_08, 202508
   const monthFromName = base.match(/(20\d{2})[-_ ]?(0?[1-9]|1[0-2])/);
   if (monthFromName) {
     return `${monthFromName[1]}-${String(+monthFromName[2]).padStart(2, "0")}`;
+  }
+  // Short YY_MM used by TD folder exports: 24_08_TD → 2024-08
+  const yyMm = base.match(/^(\d{2})[-_](0?[1-9]|1[0-2])(?:[-_].*)?$/);
+  if (yyMm) {
+    const yy = +yyMm[1];
+    const year = yy >= 70 ? 1900 + yy : 2000 + yy;
+    return `${year}-${String(+yyMm[2]).padStart(2, "0")}`;
   }
 
   const dateCol = "Transaction Date and Time";

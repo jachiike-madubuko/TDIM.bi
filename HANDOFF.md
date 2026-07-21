@@ -52,10 +52,11 @@ numbers with `executeSpec`, so answers stay correct and auditable. The refusal c
 inherits the same honesty.
 
 ### Seam 2 — Persistence
-`savedViews`, `mappingOverride`, and loaded datasets are React state. Move them to your DB
-(Supabase/Postgres). A `saved_views` table keyed by user + venue, storing the QuerySpec JSON,
-is enough. Swap `exportViews`/`importViews` for API calls. localStorage was avoided on purpose
-so this port is clean.
+Uploaded periods sync to **Supabase** (`tdim_periods`, `tdim_txn_lines`, `tdim_workspace`)
+when `VITE_SUPABASE_*` is set. IndexedDB remains a local mirror + offline fallback.
+Tables live in the dedicated `tdim.bi` Supabase project (`vxanicbragkfmifgvoxl`); venue slug
+`courtyard-bozeman`. See `COGS_AIRTABLE.md` for the Reeco margin join plan.
+Lock down RLS with Auth before wider sharing (anon policies are open for MVP).
 
 ### Seam 3 — Server-side data
 Client-side xlsx parsing is fine for one venue's quarter. For the ERP, push ingestion to a
